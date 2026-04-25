@@ -1,61 +1,94 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>模拟智能售货机</title>
+    <title>智能售货机支付台</title>
     <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
     <style>
-        body { font-family: Arial, sans-serif; text-align: center; padding: 50px; background-color: #f4f5f7; }
-        .card { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); max-width: 300px; margin: 0 auto; }
-        .btn { display: block; width: 100%; padding: 15px; margin: 20px 0; font-size: 18px; color: white; border: none; border-radius: 5px; cursor: pointer; }
+        body { font-family: Arial, sans-serif; text-align: center; padding: 20px; background-color: #f4f5f7; }
+        .card { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); max-width: 350px; margin: 0 auto; }
+        .price-box { margin: 30px 0; padding: 20px; background: #f8f9fa; border-radius: 8px; border: 2px dashed #ccc; }
+        .price-text { font-size: 36px; color: #e4393c; font-weight: bold; margin: 10px 0; }
+        .btn { display: block; width: 100%; padding: 15px; margin: 20px 0; font-size: 18px; color: white; border: none; border-radius: 5px; cursor: pointer; transition: 0.3s; }
         .btn-wechat { background-color: #07c160; }
-        .btn-alipay { background-color: #1677ff; }
+        .btn:disabled { background-color: #cccccc; cursor: not-allowed; }
         #status { color: #888; font-size: 14px; margin-top: 20px; }
     </style>
 </head>
 <body>
     <div class="card">
-        <h2>智能售货机</h2>
-        <p>当前设备号: <strong id="dev-id">识别中...</strong></p>
+        <h2>扫码付款</h2>
+        <p style="color:#666;">设备编号: <strong id="dev-id" style="color:#333;">识别中...</strong></p>
         
-        <button class="btn btn-wechat" onclick="simulatePay(100)">模拟微信 10.00 元</button>
-        <button class="btn btn-alipay" onclick="simulatePay(50)">模拟支付宝 5.00 元</button>
+        <div class="price-box">
+            <p style="margin:0; font-size:16px;">请在设备上确认订单</p>
+            <div class="price-text" id="display-price">等待同步...</div>
+        </div>
+        
+        <button id="pay-btn" class="btn btn-wechat" onclick="submitPay()" disabled>模拟支付</button>
         
         <p id="status">MQTT 云端连接中...</p>
     </div>
 
     <script>
-        // 1. 提取网址中的 ?device=MAC_vending 参数
         const urlParams = new URLSearchParams(window.location.search);
-        const deviceId = urlParams.get('device') || 'DEFAULT_MAC'; // 如果没带参数，默认叫 DEFAULT_MAC
+        const deviceId = urlParams.get('device') || 'DEFAULT_MAC'; 
         document.getElementById('dev-id').innerText = deviceId;
 
-        // 2. 连接到免费的 EMQX 公共测试服务器
-        // 注意：因为网页大多是 https，所以这里必须用加密的 wss 协议和 8084 端口
+        // 定义两个主题：一个发指令，一个收状态
+        const cmdTopic = 'vending_machine/' + deviceId + '/cmd';   // 网页 -> 机器
+        const stateTopic = 'vending_machine/' + deviceId + '/state'; // 机器 -> 网页
+
+        let targetJiao = 0; // 当前需要支付的金额(角)
+
         const client = mqtt.connect('wss://broker.emqx.io:8084/mqtt');
 
         client.on('connect', function () {
-            document.getElementById('status').innerText = '✅ 云端服务器已连接';
+            document.getElementById('status').innerText = '✅ 与售货机保持连接';
             document.getElementById('status').style.color = 'green';
+            
+            // 【核心新增】连接成功后，订阅机器的状态主题
+            client.subscribe(stateTopic, function (err) {
+                if (!err) console.log("已订阅设备状态更新");
+            });
         });
 
-        client.on('error', function (error) {
-            document.getElementById('status').innerText = '❌ 云端连接失败';
-            document.getElementById('status').style.color = 'red';
+        // 【核心新增】监听机器发来的金额消息
+        client.on('message', function (topic, message) {
+            if (topic === stateTopic) {
+                const msgStr = message.toString();
+                console.log("收到机器消息:", msgStr);
+                
+                // 假设机器发来 "PRICE,150" 代表需要支付 15 元
+                if (msgStr.startsWith('PRICE,')) {
+                    targetJiao = parseInt(msgStr.split(',')[1]);
+                    let targetYuan = (targetJiao / 10).toFixed(2);
+                    
+                    // 动态更新网页UI
+                    document.getElementById('display-price').innerText = '￥' + targetYuan;
+                    let payBtn = document.getElementById('pay-btn');
+                    payBtn.disabled = false; // 解除按钮禁用
+                    payBtn.innerText = '确认支付 ' + targetYuan + ' 元';
+                }
+            }
         });
 
-        // 3. 点击支付按钮触发的函数
-        function simulatePay(amount) {
-            // 组合要发送的指令，格式为 "PAY,金额" (金额单位为角)
-            const message = 'PAY,' + amount + '\n';
-            // 根据设备号组合唯一的通信主题 (Topic)
-            const topic = 'vending_machine/' + deviceId + '/cmd';
+        // 点击支付函数 (不再需要手动输入，直接扣对应的钱)
+        function submitPay() {
+            if (targetJiao <= 0) return;
             
-            // 通过云端把指令发出去
-            client.publish(topic, message);
+            const message = 'PAY,' + targetJiao + '\n';
+            client.publish(cmdTopic, message);
             
-            alert('支付成功！已向设备 ' + deviceId + ' 发送出货指令。');
+            alert('支付成功！已向机器发送收款确认。');
+            
+            // 支付后重置界面
+            document.getElementById('display-price').innerText = '等待同步...';
+            let payBtn = document.getElementById('pay-btn');
+            payBtn.disabled = true;
+            payBtn.innerText = '微信安全支付';
+            targetJiao = 0;
         }
     </script>
 </body>
