@@ -9,6 +9,7 @@
         .card { background: white; padding: 20px; border-radius: 15px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
         .price { font-size: 48px; color: #e74c3c; margin: 20px 0; }
         button { background: #2ecc71; color: white; border: none; padding: 15px 40px; font-size: 18px; border-radius: 30px; cursor: pointer; }
+        #log { margin-top: 20px; color: #888; font-size: 12px; text-align: left; background: #eee; padding: 10px; border-radius: 5px; word-wrap: break-word;}
     </style>
 </head>
 <body>
@@ -16,40 +17,77 @@
         <h2>待支付订单</h2>
         <div class="price">￥<span id="money">--</span></div>
         <button onclick="sendPay()">立即支付</button>
+        <div id="log">等待查询状态...</div>
     </div>
 
     <script>
         const PID = "XgqH69eNzA";
         const DEVID = "vending_machine";
-        const TOKEN = "你的Token"; // 填入你代码里那串超长的Token
+        
+        // 【关键】：这里一定要填入你之前 API 调试成功的那个 version=2022... 开头的 Token！
+        // 千万不要填 C 语言里那个 version=2018 开头的！
+        const TOKEN = "version=2022-05-01&res=userid%2F514875&et=1777231950&method=sha1&sign=7DiVCJJJ37kL3fRnQEJrFtpt8h4%3D"; 
 
-        // 自动查询当前 ZYNQ 上报的价格
+        function showLog(msg) {
+            document.getElementById('log').innerText = msg;
+        }
+
         async function getPrice() {
-            const res = await fetch(`https://iot-api.heclouds.com/thingmodel/query-device-property?product_id=${PID}&device_name=${DEVID}`, {
-                headers: { 'authorization': TOKEN }
-            });
-            const data = await res.json();
-            // 假设标识符是 price，单位角转元
-            const price = data.data.find(i => i.identifier === 'price').value;
-            document.getElementById('money').innerText = (price / 10).toFixed(2);
-            window.currentPrice = price; // 记录当前价格
+            showLog("正在向 OneNet 发起请求...");
+            try {
+                const res = await fetch(`https://iot-api.heclouds.com/thingmodel/query-device-property?product_id=${PID}&device_name=${DEVID}`, {
+                    headers: { 'authorization': TOKEN }
+                });
+                const data = await res.json();
+                
+                // 打印 OneNet 的真实回复
+                showLog("OneNet 回复: " + JSON.stringify(data));
+
+                if (data.code === 0 && data.data) {
+                    const priceObj = data.data.find(i => i.identifier === 'price');
+                    if (priceObj) {
+                        const price = priceObj.value;
+                        document.getElementById('money').innerText = (price / 10).toFixed(2);
+                        window.currentPrice = price; 
+                    } else {
+                        showLog("云端返回成功，但没有找到名为 price 的属性！请检查标识符。");
+                    }
+                } else {
+                    showLog("查询失败！云端报错: " + data.msg);
+                }
+            } catch (error) {
+                showLog("网络请求彻底失败！可能是 Token 格式错误，或浏览器拦截(CORS)。错误信息: " + error.message);
+            }
         }
 
-        // 支付动作：把查到的价格发回去
         async function sendPay() {
-            await fetch('https://iot-api.heclouds.com/thingmodel/set-device-property', {
-                method: 'POST',
-                headers: { 'authorization': TOKEN, 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    "product_id": PID,
-                    "device_name": DEVID,
-                    "params": { "pay_cmd": window.currentPrice }
-                })
-            });
-            alert("支付指令已下发！请观察售货机出货。");
+            if (!window.currentPrice) {
+                alert("还没获取到价格，无法支付！");
+                return;
+            }
+            showLog("正在发送支付指令: " + window.currentPrice);
+            try {
+                const res = await fetch('https://iot-api.heclouds.com/thingmodel/set-device-property', {
+                    method: 'POST',
+                    headers: { 'authorization': TOKEN, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        "product_id": PID,
+                        "device_name": DEVID,
+                        "params": { "pay_cmd": window.currentPrice }
+                    })
+                });
+                const data = await res.json();
+                if (data.code === 0) {
+                    alert("支付指令下发成功！");
+                    showLog("下发成功: " + JSON.stringify(data));
+                } else {
+                    alert("下发失败: " + data.msg);
+                }
+            } catch(e) {
+                showLog("发送失败: " + e.message);
+            }
         }
 
-        // 页面打开就查价格
         getPrice();
     </script>
 </body>
